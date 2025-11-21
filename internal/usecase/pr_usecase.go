@@ -63,21 +63,10 @@ func (u *PRUsecase) CreatePR(ctx context.Context, pr domain.PullRequest) (domain
 	if err := u.Repo.CreatePR(ctx, pr, "OPEN"); err != nil {
 		return domain.PullRequest{}, err
 	}
-	for _, rid := range chosen {
-		_ = u.Repo.AddPRReviewer(ctx, pr.ID, rid)
-	}
 	return pr, nil
 }
 
 func (u *PRUsecase) ReassignReviewer(ctx context.Context, prID, oldUserID string) (string, error) {
-	status, err := u.Repo.LockPRForUpdate(ctx, prID)
-	if err != nil {
-		return "", ErrNotFound
-	}
-	if status == "MERGED" {
-		return "", ErrPRMerged
-	}
-
 	assigned, err := u.Repo.IsReviewerAssigned(ctx, prID, oldUserID)
 	if err != nil {
 		return "", err
@@ -128,7 +117,16 @@ func (u *PRUsecase) ReassignReviewer(ctx context.Context, prID, oldUserID string
 	newID := ids[0]
 
 	if err := u.Repo.ReplacePRReviewer(ctx, prID, oldUserID, newID); err != nil {
-		return "", err
+		switch err {
+		case repository.ErrNotFound:
+			return "", ErrNotFound
+		case repository.ErrPRMerged:
+			return "", ErrPRMerged
+		case repository.ErrNotAssigned:
+			return "", ErrNotAssigned
+		default:
+			return "", err
+		}
 	}
 	return newID, nil
 }

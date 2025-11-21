@@ -38,3 +38,18 @@ CREATE TABLE IF NOT EXISTS pr_reviewers (
 );
 CREATE INDEX IF NOT EXISTS idx_pr_reviewers_reviewer ON pr_reviewers (reviewer_id);
 CREATE INDEX IF NOT EXISTS idx_pr_reviewers_pr ON pr_reviewers (pr_id);
+
+CREATE OR REPLACE FUNCTION check_pr_reviewer_limit() RETURNS trigger AS $$
+BEGIN
+  IF (SELECT COUNT(*) FROM pr_reviewers WHERE pr_id = NEW.pr_id) > 2 THEN
+    RAISE EXCEPTION 'Pull request % cannot have more than 2 reviewers', NEW.pr_id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER pr_reviewers_limit
+AFTER INSERT ON pr_reviewers
+DEFERRABLE INITIALLY IMMEDIATE
+FOR EACH ROW
+EXECUTE FUNCTION check_pr_reviewer_limit();

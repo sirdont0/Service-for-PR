@@ -7,7 +7,12 @@ import (
 	"github.com/you/pr-assign-avito/internal/domain"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound    = errors.New("not found")
+	ErrTeamExists  = errors.New("team exists")
+	ErrPRMerged    = errors.New("pr merged")
+	ErrNotAssigned = errors.New("not assigned")
+)
 
 type Repo interface {
 	CreateTeamWithMembers(ctx context.Context, teamName string, members []domain.User) error
@@ -21,11 +26,9 @@ type Repo interface {
 	GetActiveTeamMembersExcluding(ctx context.Context, teamID int, exclude []string) ([]domain.User, error)
 	GetPRReviewers(ctx context.Context, prID string) ([]string, error)
 	ReplacePRReviewer(ctx context.Context, prID, oldUserID, newUserID string) error
-	DeletePRReviewer(ctx context.Context, prID, userID string) error
-	AddPRReviewer(ctx context.Context, prID, userID string) error
 	MergePR(ctx context.Context, prID string) error
 	PRExists(ctx context.Context, prID string) (bool, error)
 	IsReviewerAssigned(ctx context.Context, prID, userID string) (bool, error)
 	GetPRAuthor(ctx context.Context, prID string) (string, error)
-	LockPRForUpdate(ctx context.Context, prID string) (string, error)
+	HasOpenPRsAsReviewer(ctx context.Context, userID string) (bool, error)
 }

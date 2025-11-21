@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -26,15 +25,18 @@ func newMemRepo() *memRepo {
 		reviewers: map[string][]string{},
 		statuses:  map[string]int{"OPEN": 1, "MERGED": 2},
 	}
-	m.teams["backend"] = 1
 	return m
 }
 
 func (m *memRepo) CreateTeamWithMembers(ctx context.Context, teamName string, members []domain.User) error {
+	if _, exists := m.teams[teamName]; exists {
+		return repository.ErrTeamExists
+	}
 	id := len(m.teams) + 1
 	m.teams[teamName] = id
 	for _, u := range members {
 		u.TeamID = id
+		u.TeamName = teamName
 		m.users[u.ID] = u
 	}
 	return nil
@@ -59,6 +61,7 @@ func (m *memRepo) SetUserActive(ctx context.Context, userID string, active bool)
 	}
 	u.IsActive = active
 	m.users[userID] = u
+	u.TeamName = m.teamNameByID(u.TeamID)
 	return u, nil
 }
 func (m *memRepo) GetUserByID(ctx context.Context, userID string) (domain.User, error) {
@@ -66,6 +69,7 @@ func (m *memRepo) GetUserByID(ctx context.Context, userID string) (domain.User, 
 	if !ok {
 		return domain.User{}, repository.ErrNotFound
 	}
+	u.TeamName = m.teamNameByID(u.TeamID)
 	return u, nil
 }
 func (m *memRepo) PRExists(ctx context.Context, prID string) (bool, error) {
@@ -74,6 +78,7 @@ func (m *memRepo) PRExists(ctx context.Context, prID string) (bool, error) {
 }
 func (m *memRepo) CreatePR(ctx context.Context, pr domain.PullRequest, status string) error {
 	m.prs[pr.ID] = pr
+	m.reviewers[pr.ID] = append([]string{}, pr.Reviewers...)
 	return nil
 }
 func (m *memRepo) GetActiveTeamMembersExcluding(ctx context.Context, teamID int, exclude []string) ([]domain.User, error) {
@@ -95,19 +100,28 @@ func (m *memRepo) GetPRReviewers(ctx context.Context, prID string) ([]string, er
 	return m.reviewers[prID], nil
 }
 func (m *memRepo) ReplacePRReviewer(ctx context.Context, prID, oldUserID, newUserID string) error {
+	pr, ok := m.prs[prID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if pr.Status == "MERGED" {
+		return repository.ErrPRMerged
+	}
 	arr := m.reviewers[prID]
+	found := false
 	for i, v := range arr {
 		if v == oldUserID {
 			arr[i] = newUserID
-			m.reviewers[prID] = arr
-			return nil
+			found = true
+			break
 		}
 	}
-	return errors.New("not found")
-}
-func (m *memRepo) DeletePRReviewer(ctx context.Context, prID, userID string) error { return nil }
-func (m *memRepo) AddPRReviewer(ctx context.Context, prID, userID string) error {
-	m.reviewers[prID] = append(m.reviewers[prID], userID)
+	if !found {
+		return repository.ErrNotAssigned
+	}
+	m.reviewers[prID] = arr
+	pr.Reviewers = append([]string{}, arr...)
+	m.prs[prID] = pr
 	return nil
 }
 func (m *memRepo) MergePR(ctx context.Context, prID string) error {
@@ -146,6 +160,18 @@ func (m *memRepo) GetPRAuthor(ctx context.Context, prID string) (string, error) 
 	}
 	return pr.AuthorID, nil
 }
+func (m *memRepo) HasOpenPRsAsReviewer(ctx context.Context, userID string) (bool, error) {
+	for prID, revs := range m.reviewers {
+		for _, r := range revs {
+			if r == userID {
+				if pr, ok := m.prs[prID]; ok && pr.Status == "OPEN" {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
 func (m *memRepo) LockPRForUpdate(ctx context.Context, prID string) (string, error) {
 	pr, ok := m.prs[prID]
 	if !ok {
@@ -166,6 +192,15 @@ func (m *memRepo) GetUserReviews(ctx context.Context, userID string) ([]domain.P
 		}
 	}
 	return res, nil
+}
+
+func (m *memRepo) teamNameByID(id int) string {
+	for name, storedID := range m.teams {
+		if storedID == id {
+			return name
+		}
+	}
+	return ""
 }
 
 func TestCreatePR_Simple(t *testing.T) {

@@ -1,58 +1,49 @@
 # PR Assign Service (Avito-style)
 
-## Quick start (recommended)
-1. Install Docker & docker-compose.
-2. Run:
+Сервис соответствует тестовому заданию «Сервис назначения ревьюеров для PR». HTTP-контракт полностью задокументирован в `openapi.yaml` (оригинальная спецификация из задания).
+
+## Быстрый старт
+
+1. Установите Docker и docker-compose.
+2. Поднимите окружение:
    ```bash
    docker-compose up --build
    ```
-3. Wait till migrate finishes and app starts.
-4. Health:
+3. После применения миграций сервис будет доступен на `http://localhost:8080`.
+4. Проверка здоровья:
    ```bash
    curl http://localhost:8080/health
    # {"status":"OK"}
    ```
 
-## Endpoints (examples)
+## Основные возможности
 
-* Create team:
-  ```
-  POST /team/add
-  {
-    "team_name":"backend",
-    "members":[{"user_id":"u1","username":"alice","is_active":true},{"user_id":"u2","username":"bob","is_active":true}]
-  }
-  ```
-* Create PR:
-  ```
-  POST /pullRequest/create
-  {
-    "pull_request_id":"pr1",
-    "pull_request_name":"feat",
-    "author_id":"u1"
-  }
-  ```
-* Reassign:
-  ```
-  POST /pullRequest/reassign
-  {
-    "pull_request_id":"pr1",
-    "old_user_id":"u2"
-  }
-  ```
-* Merge:
-  ```
-  POST /pullRequest/merge
-  {"pull_request_id":"pr1"}
-  ```
+- `POST /team/add` — создание новой команды (строго соответствует правилу «TEAM_EXISTS» при повторе).
+- `GET /team/get` — чтение команды и списка участников.
+- `POST /users/setIsActive` — смена активности с возвратом `team_name`.
+- `POST /pullRequest/create` — создание PR и автоматическое назначение до двух ревьюверов из команды автора.
+- `POST /pullRequest/reassign` — переназначение ревьювера с гарантией, что после `MERGED` изменения запрещены.
+- `POST /pullRequest/merge` — идемпотентный merge.
+- `GET /users/getReview` — список PR, где пользователь участвует как ревьювер.
+- `GET /health` — проверка статуса.
 
-## Tests
+Все ответы и коды ошибок соответствуют `openapi.yaml`. Для транспортных ошибок (например, некорректный JSON) используется код `NOT_FOUND`, т.к. спецификация разрешает только фиксированный enum.
 
-* Unit tests (business logic): `make test`
+## Схема данных и гарантии
 
-## Notes about design
+- PostgreSQL, миграции в `migrations/`.
+- Ограничение «не больше двух ревьюверов на PR» enforced триггером `check_pr_reviewer_limit`.
+- Все критические операции (`create`, `reassign`, `merge`) выполняются внутри транзакций с блокировками `FOR UPDATE`, что исключает гонки.
 
-* Business rules reside in `internal/usecase`.
-* Repositories contain only SQL.
-* PR statuses stored in separate table (normalization).
-* Transactions and `FOR UPDATE` used to prevent race conditions for PR modifications.
+## Тесты
+
+- Юнит-тесты бизнес-логики: `make test`.
+- (Дополнительно) интеграционные тесты можно покрыть через `docker-compose up` + Postman, опираясь на `openapi.yaml`.
+
+## Допущения и пояснения
+
+- Требование OpenAPI запрещает произвольные коды ошибок. Поэтому для любых транспортных 400/500 используется ближайший допустимый код (`NOT_FOUND`) с поясняющим сообщением.
+- `/users/getReview` возвращает `404`, если пользователь не существует, иначе — пустой список.
+- `openapi.yaml` копирует исходное задание и хранится в корне репозитория для удобства проверки.
+
+Вся доменная логика находится в `internal/usecase`, слои данных — в `internal/repository`, HTTP — в `internal/transport/http`. Логи — стандартный вывод (`infra.Logger`). Если потребуются дополнительные вопросы/допущения — они отражаются в этом разделе README.
