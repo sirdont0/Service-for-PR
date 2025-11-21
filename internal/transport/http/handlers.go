@@ -108,7 +108,7 @@ func (h *Handlers) AddTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Repo.CreateTeamWithMembers(r.Context(), payload.TeamName, users); err != nil {
 		if err == repository.ErrTeamExists {
-			errorResp(w, http.StatusBadRequest, codeTeamExists, "team_name already exists")
+			errorResp(w, http.StatusBadRequest, codeTeamExists, payload.TeamName+" already exists")
 			return
 		}
 		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
