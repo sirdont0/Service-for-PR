@@ -1,1 +1,2 @@
-Will be writed soon
+сделать проверку на merged первее чем isActive пользователя
+исправить код ошибки при провале валидации ввода (NOT_FOUND -> BAD_REQUEST)
