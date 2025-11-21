@@ -1,17 +1,18 @@
 version: "3.9"
+
 services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_USER: prs
-      POSTGRES_PASSWORD: prs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: prsdb
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U prs"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
       timeout: 3s
       retries: 5
@@ -23,7 +24,7 @@ services:
         condition: service_healthy
     volumes:
       - ./migrations:/migrations
-    command: ["-path=/migrations", "-database=postgres://prs:prs@db:5432/prsdb?sslmode=disable", "up"]
+    command: ["-path=/migrations", "-database=postgres://postgres:postgres@db:5432/prsdb?sslmode=disable", "up"]
     restart: "no"
 
   app:
@@ -34,8 +35,8 @@ services:
       db:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgres://prs:prs@db:5432/prsdb?sslmode=disable
-      - PORT=8080
+      DATABASE_URL: postgres://postgres:postgres@db:5432/prsdb?sslmode=disable
+      PORT: 8080
     ports:
       - "8080:8080"
     restart: "no"
