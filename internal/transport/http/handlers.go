@@ -17,6 +17,7 @@ const (
 	codeNotAssigned = "NOT_ASSIGNED"
 	codeNoCandidate = "NO_CANDIDATE"
 	codeNotFound    = "NOT_FOUND"
+	codeValidation  = "VALIDATION_ERROR"
 )
 
 type Handlers struct {
@@ -70,7 +71,7 @@ func errorResp(w http.ResponseWriter, status int, code, msg string) {
 }
 
 func badRequest(w http.ResponseWriter, msg string) {
-	errorResp(w, http.StatusBadRequest, codeNotFound, msg)
+	errorResp(w, http.StatusBadRequest, codeValidation, msg)
 }
 
 func notFound(w http.ResponseWriter, msg string) {
@@ -91,6 +92,7 @@ func (h *Handlers) AddTeam(w http.ResponseWriter, r *http.Request) {
 		} `json:"members"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.Log.Errorf("AddTeam: failed to decode request body: %v", err)
 		badRequest(w, "invalid json")
 		return
 	}
@@ -111,11 +113,13 @@ func (h *Handlers) AddTeam(w http.ResponseWriter, r *http.Request) {
 			errorResp(w, http.StatusBadRequest, codeTeamExists, payload.TeamName+" already exists")
 			return
 		}
+		h.Log.Errorf("AddTeam: failed to create team: %v", err)
 		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
 	team, members, err := h.Repo.GetTeamByName(r.Context(), payload.TeamName)
 	if err != nil {
+		h.Log.Errorf("AddTeam: failed to get team after creation: %v", err)
 		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
@@ -134,7 +138,12 @@ func (h *Handlers) GetTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	team, users, err := h.Repo.GetTeamByName(r.Context(), q)
 	if err != nil {
-		notFound(w, "team not found")
+		if err == repository.ErrNotFound {
+			notFound(w, "team not found")
+			return
+		}
+		h.Log.Errorf("GetTeam: failed to get team: %v", err)
+		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, buildAPITeam(team, users))
@@ -146,6 +155,7 @@ func (h *Handlers) SetIsActive(w http.ResponseWriter, r *http.Request) {
 		IsActive bool   `json:"is_active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.Log.Errorf("SetIsActive: failed to decode request body: %v", err)
 		badRequest(w, "invalid json")
 		return
 	}
@@ -155,7 +165,12 @@ func (h *Handlers) SetIsActive(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.Repo.SetUserActive(r.Context(), payload.UserID, payload.IsActive)
 	if err != nil {
-		notFound(w, "user not found")
+		if err == repository.ErrNotFound {
+			notFound(w, "user not found")
+			return
+		}
+		h.Log.Errorf("SetIsActive: failed to set user active: %v", err)
+		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"user": buildAPIUser(user)})
@@ -168,12 +183,18 @@ func (h *Handlers) GetUserReviews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.Repo.GetUserByID(r.Context(), uid); err != nil {
-		notFound(w, "user not found")
+		if err == repository.ErrNotFound {
+			notFound(w, "user not found")
+			return
+		}
+		h.Log.Errorf("GetUserReviews: failed to get user: %v", err)
+		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
 	prs, err := h.UC.Repo.GetUserReviews(r.Context(), uid)
 	if err != nil {
-		notFound(w, "user not found")
+		h.Log.Errorf("GetUserReviews: failed to get user reviews: %v", err)
+		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
 	short := make([]apiPullRequestShort, 0, len(prs))
@@ -195,6 +216,7 @@ func (h *Handlers) CreatePR(w http.ResponseWriter, r *http.Request) {
 		AuthorID        string `json:"author_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.Log.Errorf("CreatePR: failed to decode request body: %v", err)
 		badRequest(w, "invalid json")
 		return
 	}
@@ -215,6 +237,7 @@ func (h *Handlers) CreatePR(w http.ResponseWriter, r *http.Request) {
 		case uc.ErrNotFound:
 			notFound(w, "author or team not found")
 		default:
+			h.Log.Errorf("CreatePR: failed to create PR: %v", err)
 			errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		}
 		return
@@ -228,6 +251,7 @@ func (h *Handlers) Reassign(w http.ResponseWriter, r *http.Request) {
 		OldUserID     string `json:"old_user_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.Log.Errorf("Reassign: failed to decode request body: %v", err)
 		badRequest(w, "invalid json")
 		return
 	}
@@ -239,7 +263,7 @@ func (h *Handlers) Reassign(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch err {
 		case uc.ErrNotFound:
-			notFound(w, "PR or user not found")
+			notFound(w, "PR not found")
 		case uc.ErrPRMerged:
 			errorResp(w, http.StatusConflict, codePRMerged, "cannot reassign on merged PR")
 		case uc.ErrNotAssigned:
@@ -247,13 +271,15 @@ func (h *Handlers) Reassign(w http.ResponseWriter, r *http.Request) {
 		case uc.ErrNoCandidate:
 			errorResp(w, http.StatusConflict, codeNoCandidate, "no active replacement candidate in team")
 		default:
+			h.Log.Errorf("Reassign: failed to reassign reviewer: %v", err)
 			errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		}
 		return
 	}
 	pr, err := h.UC.Repo.GetPR(r.Context(), payload.PullRequestID)
 	if err != nil {
-		errorResp(w, http.StatusInternalServerError, codeNotFound, err.Error())
+		h.Log.Errorf("Reassign: failed to get PR after reassign: %v", err)
+		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"pr": pr, "replaced_by": newID})
@@ -264,6 +290,7 @@ func (h *Handlers) Merge(w http.ResponseWriter, r *http.Request) {
 		PullRequestID string `json:"pull_request_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		h.Log.Errorf("Merge: failed to decode request body: %v", err)
 		badRequest(w, "invalid json")
 		return
 	}
@@ -277,6 +304,7 @@ func (h *Handlers) Merge(w http.ResponseWriter, r *http.Request) {
 			notFound(w, "PR not found")
 			return
 		}
+		h.Log.Errorf("Merge: failed to merge PR: %v", err)
 		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
 		return
 	}

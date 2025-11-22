@@ -16,6 +16,7 @@ var (
 	ErrPRMerged    = errors.New("pr merged")
 	ErrNotAssigned = errors.New("not assigned")
 	ErrNoCandidate = errors.New("no candidate")
+	ErrValidation  = errors.New("validation error")
 )
 
 type PRUsecase struct {
@@ -67,6 +68,21 @@ func (u *PRUsecase) CreatePR(ctx context.Context, pr domain.PullRequest) (domain
 }
 
 func (u *PRUsecase) ReassignReviewer(ctx context.Context, prID, oldUserID string) (string, error) {
+	// Сначала проверяем статус PR - это главная проверка
+	pr, err := u.Repo.GetPR(ctx, prID)
+	if err != nil {
+		if err == repository.ErrNotFound {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+
+	// Проверяем, что PR не закрыт (merged)
+	if pr.Status != "OPEN" {
+		return "", ErrPRMerged
+	}
+
+	// Теперь проверяем, что ревьювер назначен
 	assigned, err := u.Repo.IsReviewerAssigned(ctx, prID, oldUserID)
 	if err != nil {
 		return "", err
