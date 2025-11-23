@@ -347,3 +347,7 @@ make docker-up # Запустить docker-compose
 - `idx_pr_status` - для фильтрации по статусу
 - `idx_pr_reviewers_reviewer` - для поиска PR по ревьюверу
 - `idx_pr_reviewers_pr` - для поиска ревьюверов PR
+
+## Выполнил задание:
+### Томчук Дмитрий
+### tg: @tomchukd
