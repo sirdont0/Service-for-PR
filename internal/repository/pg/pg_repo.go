@@ -9,6 +9,7 @@ import (
 	"github.com/you/pr-assign-avito/internal/domain"
 	"github.com/you/pr-assign-avito/internal/repository"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,10 +28,20 @@ func (p *PGRepo) CreateTeamWithMembers(ctx context.Context, teamName string, mem
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	var exists bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM teams WHERE name=$1)", teamName).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return repository.ErrTeamExists
+	}
 
 	var teamID int
-	err = tx.QueryRow(ctx, "INSERT INTO teams(name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id", teamName).Scan(&teamID)
+	err = tx.QueryRow(ctx, "INSERT INTO teams(name) VALUES ($1) RETURNING id", teamName).Scan(&teamID)
 	if err != nil {
 		return err
 	}
@@ -68,12 +79,20 @@ func (p *PGRepo) GetTeamByName(ctx context.Context, name string) (domain.Team, [
 }
 
 func (p *PGRepo) SetUserActive(ctx context.Context, userID string, active bool) (domain.User, error) {
-	_, err := p.pool.Exec(ctx, "UPDATE users SET is_active=$1 WHERE id=$2", active, userID)
+	tag, err := p.pool.Exec(ctx, "UPDATE users SET is_active=$1 WHERE id=$2", active, userID)
 	if err != nil {
 		return domain.User{}, err
 	}
+	if tag.RowsAffected() == 0 {
+		return domain.User{}, repository.ErrNotFound
+	}
 	var u domain.User
-	err = p.pool.QueryRow(ctx, "SELECT id, username, team_id, is_active FROM users WHERE id=$1", userID).Scan(&u.ID, &u.Username, &u.TeamID, &u.IsActive)
+	err = p.pool.QueryRow(ctx, `
+        SELECT u.id, u.username, u.team_id, t.name, u.is_active
+        FROM users u
+        JOIN teams t ON t.id = u.team_id
+        WHERE u.id=$1
+    `, userID).Scan(&u.ID, &u.Username, &u.TeamID, &u.TeamName, &u.IsActive)
 	if err != nil {
 		return domain.User{}, repository.ErrNotFound
 	}
@@ -82,8 +101,12 @@ func (p *PGRepo) SetUserActive(ctx context.Context, userID string, active bool) 
 
 func (p *PGRepo) GetUserByID(ctx context.Context, userID string) (domain.User, error) {
 	var u domain.User
-	err := p.pool.QueryRow(ctx, "SELECT id, username, team_id, is_active FROM users WHERE id=$1", userID).
-		Scan(&u.ID, &u.Username, &u.TeamID, &u.IsActive)
+	err := p.pool.QueryRow(ctx, `
+        SELECT u.id, u.username, u.team_id, t.name, u.is_active
+        FROM users u
+        JOIN teams t ON t.id = u.team_id
+        WHERE u.id=$1
+    `, userID).Scan(&u.ID, &u.Username, &u.TeamID, &u.TeamName, &u.IsActive)
 	if err != nil {
 		return domain.User{}, repository.ErrNotFound
 	}
@@ -104,7 +127,9 @@ func (p *PGRepo) CreatePR(ctx context.Context, pr domain.PullRequest, status str
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var statusID int
 	err = tx.QueryRow(ctx, "SELECT id FROM pr_statuses WHERE name=$1", status).Scan(&statusID)
@@ -120,6 +145,11 @@ func (p *PGRepo) CreatePR(ctx context.Context, pr domain.PullRequest, status str
 
 	for _, r := range pr.Reviewers {
 		_, err = tx.Exec(ctx, "INSERT INTO pr_reviewers (pr_id, reviewer_id) VALUES ($1,$2)", pr.ID, r)
+		if err != nil {
+			return err
+		}
+		// Деактивируем ревьювера при назначении
+		_, err = tx.Exec(ctx, "UPDATE users SET is_active=FALSE WHERE id=$1", r)
 		if err != nil {
 			return err
 		}
@@ -153,7 +183,9 @@ func (p *PGRepo) GetPR(ctx context.Context, prID string) (domain.PullRequest, er
 		var revs []string
 		for rows.Next() {
 			var rid string
-			rows.Scan(&rid)
+			if err := rows.Scan(&rid); err != nil {
+				return pr, err
+			}
 			revs = append(revs, rid)
 		}
 		pr.Reviewers = revs
@@ -216,7 +248,9 @@ func (p *PGRepo) GetPRReviewers(ctx context.Context, prID string) ([]string, err
 	var revs []string
 	for rows.Next() {
 		var r string
-		rows.Scan(&r)
+		if err := rows.Scan(&r); err != nil {
+			return nil, err
+		}
 		revs = append(revs, r)
 	}
 	return revs, nil
@@ -273,27 +307,71 @@ func (p *PGRepo) ReplacePRReviewer(ctx context.Context, prID, oldUserID, newUser
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
-	_, err = tx.Exec(ctx, "DELETE FROM pr_reviewers WHERE pr_id=$1 AND reviewer_id=$2", prID, oldUserID)
+	var status string
+	err = tx.QueryRow(ctx, `
+        SELECT st.name
+        FROM pull_requests pr
+        JOIN pr_statuses st ON pr.status_id = st.id
+        WHERE pr.id=$1
+        FOR UPDATE
+    `, prID).Scan(&status)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return repository.ErrNotFound
+		}
+		return err
+	}
+	if status == "MERGED" {
+		return repository.ErrPRMerged
+	}
+
+	cmd, err := tx.Exec(ctx, "DELETE FROM pr_reviewers WHERE pr_id=$1 AND reviewer_id=$2", prID, oldUserID)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, "INSERT INTO pr_reviewers (pr_id, reviewer_id) VALUES ($1,$2)", prID, newUserID)
+	if cmd.RowsAffected() == 0 {
+		return repository.ErrNotAssigned
+	}
+
+	// Проверяем, есть ли у старого ревьювера другие открытые PR
+	var hasOpenPRs bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 
+			FROM pr_reviewers rv
+			JOIN pull_requests pr ON pr.id = rv.pr_id
+			JOIN pr_statuses st ON pr.status_id = st.id
+			WHERE rv.reviewer_id = $1 AND st.name = 'OPEN'
+		)
+	`, oldUserID).Scan(&hasOpenPRs)
 	if err != nil {
 		return err
 	}
+
+	// Активируем старого ревьювера, если у него нет других открытых PR
+	if !hasOpenPRs {
+		_, err = tx.Exec(ctx, "UPDATE users SET is_active=TRUE WHERE id=$1", oldUserID)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Добавляем нового ревьювера
+	if _, err := tx.Exec(ctx, "INSERT INTO pr_reviewers (pr_id, reviewer_id) VALUES ($1,$2)", prID, newUserID); err != nil {
+		return err
+	}
+
+	// Деактивируем нового ревьювера
+	_, err = tx.Exec(ctx, "UPDATE users SET is_active=FALSE WHERE id=$1", newUserID)
+	if err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
-}
-
-func (p *PGRepo) DeletePRReviewer(ctx context.Context, prID, userID string) error {
-	_, err := p.pool.Exec(ctx, "DELETE FROM pr_reviewers WHERE pr_id=$1 AND reviewer_id=$2", prID, userID)
-	return err
-}
-
-func (p *PGRepo) AddPRReviewer(ctx context.Context, prID, userID string) error {
-	_, err := p.pool.Exec(ctx, "INSERT INTO pr_reviewers (pr_id, reviewer_id) VALUES ($1,$2)", prID, userID)
-	return err
 }
 
 func (p *PGRepo) MergePR(ctx context.Context, prID string) error {
@@ -301,7 +379,9 @@ func (p *PGRepo) MergePR(ctx context.Context, prID string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var status string
 	err = tx.QueryRow(ctx, "SELECT st.name FROM pull_requests pr JOIN pr_statuses st ON pr.status_id=st.id WHERE pr.id=$1 FOR UPDATE", prID).Scan(&status)
@@ -316,23 +396,57 @@ func (p *PGRepo) MergePR(ctx context.Context, prID string) error {
 	if err != nil {
 		return err
 	}
+
+	// Активируем всех ревьюверов после merge
+	_, err = tx.Exec(ctx, `
+		UPDATE users 
+		SET is_active=TRUE 
+		WHERE id IN (
+			SELECT reviewer_id 
+			FROM pr_reviewers 
+			WHERE pr_id=$1
+		)
+	`, prID)
+	if err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
 }
 
-func (p *PGRepo) LockPRForUpdate(ctx context.Context, prID string) (string, error) {
-	tx, err := p.pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback(ctx)
+func (p *PGRepo) HasOpenPRsAsReviewer(ctx context.Context, userID string) (bool, error) {
+	var hasOpen bool
+	err := p.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 
+			FROM pr_reviewers rv
+			JOIN pull_requests pr ON pr.id = rv.pr_id
+			JOIN pr_statuses st ON pr.status_id = st.id
+			WHERE rv.reviewer_id = $1 AND st.name = 'OPEN'
+		)
+	`, userID).Scan(&hasOpen)
+	return hasOpen, err
+}
 
-	var status string
-	err = tx.QueryRow(ctx, "SELECT st.name FROM pull_requests pr JOIN pr_statuses st ON pr.status_id=st.id WHERE pr.id=$1 FOR UPDATE", prID).Scan(&status)
+func (p *PGRepo) GetReviewerStats(ctx context.Context) ([]repository.ReviewerStat, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT u.id, u.username, COUNT(rv.pr_id) as assignment_count
+		FROM users u
+		LEFT JOIN pr_reviewers rv ON u.id = rv.reviewer_id
+		GROUP BY u.id, u.username
+		ORDER BY assignment_count DESC, u.username
+	`)
 	if err != nil {
-		return "", repository.ErrNotFound
+		return nil, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return "", err
+	defer rows.Close()
+	var stats []repository.ReviewerStat
+	for rows.Next() {
+		var stat repository.ReviewerStat
+		if err := rows.Scan(&stat.UserID, &stat.Username, &stat.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
 	}
-	return status, nil
+	return stats, rows.Err()
 }

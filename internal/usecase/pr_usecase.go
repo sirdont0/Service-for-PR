@@ -16,6 +16,7 @@ var (
 	ErrPRMerged    = errors.New("pr merged")
 	ErrNotAssigned = errors.New("not assigned")
 	ErrNoCandidate = errors.New("no candidate")
+	ErrValidation  = errors.New("validation error")
 )
 
 type PRUsecase struct {
@@ -24,6 +25,7 @@ type PRUsecase struct {
 }
 
 func NewPRUsecase(r repository.Repo) *PRUsecase {
+	//nolint:gosec // math/rand is sufficient for non-cryptographic shuffling
 	return &PRUsecase{
 		Repo: r,
 		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -63,21 +65,25 @@ func (u *PRUsecase) CreatePR(ctx context.Context, pr domain.PullRequest) (domain
 	if err := u.Repo.CreatePR(ctx, pr, "OPEN"); err != nil {
 		return domain.PullRequest{}, err
 	}
-	for _, rid := range chosen {
-		_ = u.Repo.AddPRReviewer(ctx, pr.ID, rid)
-	}
 	return pr, nil
 }
 
 func (u *PRUsecase) ReassignReviewer(ctx context.Context, prID, oldUserID string) (string, error) {
-	status, err := u.Repo.LockPRForUpdate(ctx, prID)
+	// Сначала проверяем статус PR - это главная проверка
+	pr, err := u.Repo.GetPR(ctx, prID)
 	if err != nil {
-		return "", ErrNotFound
+		if err == repository.ErrNotFound {
+			return "", ErrNotFound
+		}
+		return "", err
 	}
-	if status == "MERGED" {
+
+	// Проверяем, что PR не закрыт (merged)
+	if pr.Status != "OPEN" {
 		return "", ErrPRMerged
 	}
 
+	// Теперь проверяем, что ревьювер назначен
 	assigned, err := u.Repo.IsReviewerAssigned(ctx, prID, oldUserID)
 	if err != nil {
 		return "", err
@@ -128,7 +134,16 @@ func (u *PRUsecase) ReassignReviewer(ctx context.Context, prID, oldUserID string
 	newID := ids[0]
 
 	if err := u.Repo.ReplacePRReviewer(ctx, prID, oldUserID, newID); err != nil {
-		return "", err
+		switch err {
+		case repository.ErrNotFound:
+			return "", ErrNotFound
+		case repository.ErrPRMerged:
+			return "", ErrPRMerged
+		case repository.ErrNotAssigned:
+			return "", ErrNotAssigned
+		default:
+			return "", err
+		}
 	}
 	return newID, nil
 }

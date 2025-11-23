@@ -1,16 +1,15 @@
-.PHONY: build run test docker-up migrate
+.PHONY: all lint test docker-up 
 
-build:
-	go build ./...
+start: all docker-up
 
-run:
-	go run ./cmd/server
+all: lint test
 
-test:
+lint:
+	golangci-lint run ./...
+
+test: lint
 	go test ./... -v
 
-docker-up:
+docker-up: lint test
 	docker-compose up --build
 
-migrate:
-	docker-compose run --rm migrate
