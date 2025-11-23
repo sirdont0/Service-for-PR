@@ -28,7 +28,9 @@ func (p *PGRepo) CreateTeamWithMembers(ctx context.Context, teamName string, mem
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var exists bool
 	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM teams WHERE name=$1)", teamName).Scan(&exists); err != nil {
@@ -125,7 +127,9 @@ func (p *PGRepo) CreatePR(ctx context.Context, pr domain.PullRequest, status str
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var statusID int
 	err = tx.QueryRow(ctx, "SELECT id FROM pr_statuses WHERE name=$1", status).Scan(&statusID)
@@ -179,7 +183,9 @@ func (p *PGRepo) GetPR(ctx context.Context, prID string) (domain.PullRequest, er
 		var revs []string
 		for rows.Next() {
 			var rid string
-			rows.Scan(&rid)
+			if err := rows.Scan(&rid); err != nil {
+				return pr, err
+			}
 			revs = append(revs, rid)
 		}
 		pr.Reviewers = revs
@@ -242,7 +248,9 @@ func (p *PGRepo) GetPRReviewers(ctx context.Context, prID string) ([]string, err
 	var revs []string
 	for rows.Next() {
 		var r string
-		rows.Scan(&r)
+		if err := rows.Scan(&r); err != nil {
+			return nil, err
+		}
 		revs = append(revs, r)
 	}
 	return revs, nil
@@ -299,7 +307,9 @@ func (p *PGRepo) ReplacePRReviewer(ctx context.Context, prID, oldUserID, newUser
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var status string
 	err = tx.QueryRow(ctx, `
@@ -369,7 +379,9 @@ func (p *PGRepo) MergePR(ctx context.Context, prID string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var status string
 	err = tx.QueryRow(ctx, "SELECT st.name FROM pull_requests pr JOIN pr_statuses st ON pr.status_id=st.id WHERE pr.id=$1 FOR UPDATE", prID).Scan(&status)
@@ -414,4 +426,27 @@ func (p *PGRepo) HasOpenPRsAsReviewer(ctx context.Context, userID string) (bool,
 		)
 	`, userID).Scan(&hasOpen)
 	return hasOpen, err
+}
+
+func (p *PGRepo) GetReviewerStats(ctx context.Context) ([]repository.ReviewerStat, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT u.id, u.username, COUNT(rv.pr_id) as assignment_count
+		FROM users u
+		LEFT JOIN pr_reviewers rv ON u.id = rv.reviewer_id
+		GROUP BY u.id, u.username
+		ORDER BY assignment_count DESC, u.username
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stats []repository.ReviewerStat
+	for rows.Next() {
+		var stat repository.ReviewerStat
+		if err := rows.Scan(&stat.UserID, &stat.Username, &stat.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
 }

@@ -30,11 +30,12 @@ func main() {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
+		cancel()
 		log.Fatalf("db connect: %v", err)
 	}
+	defer cancel()
 	defer pool.Close()
 
 	repoImpl := pgrepo.NewPGRepo(pool)

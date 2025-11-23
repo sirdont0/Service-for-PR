@@ -25,6 +25,7 @@ type PRUsecase struct {
 }
 
 func NewPRUsecase(r repository.Repo) *PRUsecase {
+	//nolint:gosec // math/rand is sufficient for non-cryptographic shuffling
 	return &PRUsecase{
 		Repo: r,
 		rand: rand.New(rand.NewSource(time.Now().UnixNano())),

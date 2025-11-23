@@ -311,6 +311,24 @@ func (h *Handlers) Merge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"pr": pr})
 }
 
+func (h *Handlers) GetStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.Repo.GetReviewerStats(r.Context())
+	if err != nil {
+		h.Log.Errorf("GetStats: failed to get reviewer stats: %v", err)
+		errorResp(w, http.StatusInternalServerError, codeNotFound, "internal server error")
+		return
+	}
+	apiStats := make([]map[string]interface{}, 0, len(stats))
+	for _, stat := range stats {
+		apiStats = append(apiStats, map[string]interface{}{
+			"user_id":           stat.UserID,
+			"username":          stat.Username,
+			"assignments_count": stat.Count,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"statistics": apiStats})
+}
+
 func buildAPITeam(team domain.Team, members []domain.User) apiTeam {
 	resp := apiTeam{
 		TeamName: team.Name,

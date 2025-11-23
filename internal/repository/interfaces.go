@@ -31,4 +31,11 @@ type Repo interface {
 	IsReviewerAssigned(ctx context.Context, prID, userID string) (bool, error)
 	GetPRAuthor(ctx context.Context, prID string) (string, error)
 	HasOpenPRsAsReviewer(ctx context.Context, userID string) (bool, error)
+	GetReviewerStats(ctx context.Context) ([]ReviewerStat, error)
+}
+
+type ReviewerStat struct {
+	UserID   string
+	Username string
+	Count    int
 }
