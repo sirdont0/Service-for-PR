@@ -262,6 +262,12 @@ go test ./... -cover
 ### Локальная разработка
 
 ```bash
+
+# ОДНОЙ командной
+make
+
+# или по частям ->
+
 # Установить зависимости
 go mod download
 
@@ -280,10 +286,6 @@ docker run --rm -v $(pwd)/migrations:/migrations --network host migrate/migrate 
 
 # Запустить приложение
 DATABASE_URL="postgres://postgres:postgres@localhost:5433/prsdb?sslmode=disable" PORT=8080 go run cmd/server/main.go
-
-
-# ИЛИ ОДНОЙ командной
-make
 
 ```
 
